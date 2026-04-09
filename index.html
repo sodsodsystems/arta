@@ -107,7 +107,7 @@
 <body>
 
 <header>
-  <div class="logo">ARTA <span>//</span> Satisfaction Survey Tally</div>
+  <div class="logo">ARTA <span>//</span> Tally <span id="saveStatus" style="margin-left: 10px; opacity: 0.6; font-weight: normal; font-size: 11px;"></span></div>
   <div class="header-actions">
     <button class="btn" onclick="backupDB()" title="Save all data to a JSON file">Backup</button>
     <button class="btn" onclick="restoreDB()" title="Restore data from a JSON backup">Restore</button>
@@ -234,21 +234,69 @@ function migrateData() {
       delete data[k];
     }
   });
-  if (migrated) save();
+function save() {
+  try { 
+    localStorage.setItem('lcwd_tally', JSON.stringify(data)); 
+    updateSaveStatus();
+  } catch(e) {}
 }
-migrateData();
 
-// ── Sync Tabs ──────────────────────────────────────────────────────────────
-window.addEventListener('storage', function(e) {
-  if (e.key === 'lcwd_tally') {
-    try { 
-      data = JSON.parse(e.newValue || '{}'); 
-      render(); 
-    } catch(err) {}
+function updateSaveStatus() {
+  const el = document.getElementById('saveStatus');
+  if (!el) return;
+  const now = new Date();
+  el.textContent = 'Saved at ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  el.style.opacity = '1';
+  el.style.color = 'var(--accent)';
+  setTimeout(() => { 
+    el.style.opacity = '0.6'; 
+    el.style.color = 'var(--text3)';
+  }, 1000);
+}
+
+// ── Checkpoints & Recovery ──────────────────────────────────────────────────
+function createCheckpoint(type = 'auto') {
+  try {
+    const checkpoint = {
+      timestamp: new Date().toISOString(),
+      type: type,
+      data: data
+    };
+    localStorage.setItem('lcwd_tally_checkpoint', JSON.stringify(checkpoint));
+    console.log('Checkpoint created:', type);
+  } catch(e) { console.error('Checkpoint failed', e); }
+}
+
+function checkRecovery() {
+  const chkStr = localStorage.getItem('lcwd_tally_checkpoint');
+  if (!chkStr) return;
+  
+  // If main data is entirely empty, offer recovery
+  if (Object.keys(data).length === 0) {
+    const checkpoint = JSON.parse(chkStr);
+    if (confirm('It looks like your local data is empty, but we found a backup from ' + new Date(checkpoint.timestamp).toLocaleString() + '. Would you like to restore it?')) {
+      data = checkpoint.data;
+      save();
+      render();
+      toast('Data recovered from checkpoint!');
+    }
+  }
+}
+
+// Auto-checkpoint every 5 minutes
+setInterval(() => createCheckpoint('auto'), 5 * 60 * 1000);
+
+// Exit protection
+window.addEventListener('beforeunload', function(e) {
+  // Only warn if they are in the middle of a session (simplified check)
+  // Browser standard prevents custom messages in many cases, but this triggers the confirmation.
+  if (Object.keys(data).length > 0) {
+    e.preventDefault();
+    e.returnValue = '';
   }
 });
 
-function aggregate() {
+function migrateData() {
   const y = document.getElementById('year').value;
   const t = document.getElementById('svcType').value;
   const n = document.getElementById('svcName').value;
@@ -414,6 +462,7 @@ function undoSQD(sqd)    { if (isOverall()) return; var a = entry().sqd[sqd]; fo
 function resetCurrent() {
   if (isOverall()) return;
   if (!confirm('Reset all tallies for this service and month?')) return;
+  createCheckpoint('pre-reset');
   delete data[key()];
   save();
   render();
@@ -538,6 +587,7 @@ function restoreDB() {
       try {
         const imported = JSON.parse(reader.result);
         if (confirm('Overwrite current local database with this backup?')) {
+          createCheckpoint('pre-restore');
           data = imported;
           save();
           render();
@@ -558,6 +608,7 @@ function importTemplate() {
   input.onchange = async e => {
     const file = e.target.files[0];
     toast('Parsing template...');
+    createCheckpoint('pre-import');
     try {
       const arrayBuffer = await file.arrayBuffer();
       const wb = XLSX.read(arrayBuffer, { type: 'buffer' });
@@ -638,6 +689,8 @@ function toast(msg) {
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
+updateSaveStatus();
+checkRecovery();
 populateSvc();
 </script>
 </body>
