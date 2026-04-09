@@ -130,9 +130,16 @@
       <select id="svcName" onchange="render()"></select>
     </div>
     <div class="ctrl-group">
+      <label>Year</label>
+      <select id="year" onchange="render()">
+        <option>2024</option><option>2025</option><option>2026</option>
+      </select>
+    </div>
+    <div class="ctrl-group">
       <label>Month</label>
       <select id="month" onchange="render()">
         <option value="Overall">Overall / Yearly Summary</option>
+        <option>No date stated</option>
         <option>January</option><option>February</option><option>March</option>
         <option>April</option><option>May</option><option>June</option>
         <option>July</option><option>August</option><option>September</option>
@@ -207,12 +214,42 @@ let data = {};
 try { data = JSON.parse(localStorage.getItem('lcwd_tally') || '{}'); } catch(e) {}
 
 function key() {
-  return document.getElementById('svcType').value + '||' +
+  return document.getElementById('year').value + '||' +
+         document.getElementById('svcType').value + '||' +
          document.getElementById('svcName').value + '||' +
          document.getElementById('month').value;
 }
 
+// ── Migration Logic ────────────────────────────────────────────────────────
+function migrateData() {
+  let migrated = false;
+  Object.keys(data).forEach(k => {
+    // Old key format: Type||Name||Month (2 parts split by ||)
+    if (k.split('||').length === 3) {
+      const newKey = '2024||' + k;
+      if (!data[newKey]) {
+        data[newKey] = data[k];
+        migrated = true;
+      }
+      delete data[k];
+    }
+  });
+  if (migrated) save();
+}
+migrateData();
+
+// ── Sync Tabs ──────────────────────────────────────────────────────────────
+window.addEventListener('storage', function(e) {
+  if (e.key === 'lcwd_tally') {
+    try { 
+      data = JSON.parse(e.newValue || '{}'); 
+      render(); 
+    } catch(err) {}
+  }
+});
+
 function aggregate() {
+  const y = document.getElementById('year').value;
   const t = document.getElementById('svcType').value;
   const n = document.getElementById('svcName').value;
   const agg = {
@@ -222,9 +259,9 @@ function aggregate() {
   };
   SQD_LABELS.forEach(function(s) { agg.sqd[s] = [0,0,0,0,0,0]; });
 
-  const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const months = ["January","February","March","April","May","June","July","August","September","October","November","December","No date stated"];
   months.forEach(function(m) {
-    const k = t + '||' + n + '||' + m;
+    const k = y + '||' + t + '||' + n + '||' + m;
     const e = data[k];
     if (e) {
       CC_LABELS.forEach(function(cc) {
@@ -404,20 +441,29 @@ async function exportExcel() {
     if (wsSummary) {
       const range = XLSX.utils.decode_range(wsSummary['!ref']);
       let colIdx = -1;
-      // Search Row 1 for service name
+      const toolName = svc.replace(/[^a-z0-9]/gi, '').toLowerCase();
+
+      // Priority 1: Exact cleaned match
       for (let c = 1; c <= range.e.c; c++) {
         const cell = wsSummary[XLSX.utils.encode_cell({ r: 0, c: c })];
         if (cell && cell.v) {
           const excelName = cell.v.toString().replace(/[^a-z0-9]/gi, '').toLowerCase();
-          const toolName  = svc.replace(/[^a-z0-9]/gi, '').toLowerCase();
-          if (excelName === toolName || excelName.includes(toolName) || toolName.includes(excelName)) {
-            colIdx = c;
-            break;
+          if (excelName === toolName) { colIdx = c; break; }
+        }
+      }
+      // Priority 2: Fuzzy includes
+      if (colIdx === -1) {
+        for (let c = 1; c <= range.e.c; c++) {
+          const cell = wsSummary[XLSX.utils.encode_cell({ r: 0, c: c })];
+          if (cell && cell.v) {
+            const excelName = cell.v.toString().replace(/[^a-z0-9]/gi, '').toLowerCase();
+            if (excelName.includes(toolName) || toolName.includes(excelName)) { colIdx = c; break; }
           }
         }
       }
 
       if (colIdx !== -1) {
+        // ... (data population stays the same)
         // Demographics
         for (let i = 0; i < 6; i++) wsSummary[XLSX.utils.encode_cell({ r: 2 + i, c: colIdx })] = { v: e.demo.age[i], t: 'n' };
         for (let i = 0; i < 3; i++) wsSummary[XLSX.utils.encode_cell({ r: 9 + i, c: colIdx })] = { v: e.demo.clientType[i], t: 'n' };
@@ -438,10 +484,18 @@ async function exportExcel() {
     // 2. Populate Service-Specific Sheet
     let svcSheetName = null;
     const cleanToolName = svc.replace(/[^a-z0-9]/gi, '').toLowerCase();
-    wb.SheetNames.forEach(name => {
-      const cleanName = name.replace(/[^a-z0-9]/gi, '').toLowerCase();
-      if (cleanName === cleanToolName || cleanName.includes(cleanToolName) || cleanToolName.includes(cleanName)) svcSheetName = name;
-    });
+    
+    // Priority 1: Exact cleaned match
+    for (let name of wb.SheetNames) {
+      if (name.replace(/[^a-z0-9]/gi, '').toLowerCase() === cleanToolName) { svcSheetName = name; break; }
+    }
+    // Priority 2: Fuzzy includes
+    if (!svcSheetName) {
+      for (let name of wb.SheetNames) {
+        const cleanName = name.replace(/[^a-z0-9]/gi, '').toLowerCase();
+        if (cleanName.includes(cleanToolName) || cleanToolName.includes(cleanName)) { svcSheetName = name; break; }
+      }
+    }
 
     if (svcSheetName && wb.Sheets[svcSheetName]) {
       const wsSvc = wb.Sheets[svcSheetName];
@@ -517,13 +571,21 @@ function importTemplate() {
       let colIdx = -1;
       const toolName = svc.replace(/[^a-z0-9]/gi, '').toLowerCase();
       
+      // Exact cleaned match first
       for (let c = 1; c <= range.e.c; c++) {
         const cell = ws[XLSX.utils.encode_cell({ r: 0, c: c })];
         if (cell && cell.v) {
           const excelName = cell.v.toString().replace(/[^a-z0-9]/gi, '').toLowerCase();
-          if (excelName === toolName || excelName.includes(toolName) || toolName.includes(excelName)) {
-            colIdx = c;
-            break;
+          if (excelName === toolName) { colIdx = c; break; }
+        }
+      }
+      // Fuzzy if not found
+      if (colIdx === -1) {
+        for (let c = 1; c <= range.e.c; c++) {
+          const cell = ws[XLSX.utils.encode_cell({ r: 0, c: c })];
+          if (cell && cell.v) {
+            const excelName = cell.v.toString().replace(/[^a-z0-9]/gi, '').toLowerCase();
+            if (excelName.includes(toolName) || toolName.includes(excelName)) { colIdx = c; break; }
           }
         }
       }
@@ -531,34 +593,28 @@ function importTemplate() {
       if (colIdx === -1) throw new Error('Service "' + svc + '" not found in Excel sheet');
       
       const entryObj = entry();
+      const parseVal = v => (v && v.v != null) ? Number(v.v) || 0 : 0;
       
       // Extract Data (Mapping same rows as export)
       for (let i = 0; i < 6; i++) {
-        const v = ws[XLSX.utils.encode_cell({ r: 2 + i, c: colIdx })];
-        entryObj.demo.age[i] = (v && typeof v.v === 'number') ? v.v : 0;
+        entryObj.demo.age[i] = parseVal(ws[XLSX.utils.encode_cell({ r: 2 + i, c: colIdx })]);
       }
       for (let i = 0; i < 3; i++) {
-        const v = ws[XLSX.utils.encode_cell({ r: 9 + i, c: colIdx })];
-        entryObj.demo.clientType[i] = (v && typeof v.v === 'number') ? v.v : 0;
+        entryObj.demo.clientType[i] = parseVal(ws[XLSX.utils.encode_cell({ r: 9 + i, c: colIdx })]);
       }
       for (let i = 0; i < 2; i++) {
-        const v = ws[XLSX.utils.encode_cell({ r: 13 + i, c: colIdx })];
-        entryObj.demo.sex[i] = (v && typeof v.v === 'number') ? v.v : 0;
+        entryObj.demo.sex[i] = parseVal(ws[XLSX.utils.encode_cell({ r: 13 + i, c: colIdx })]);
       }
       for (let i = 0; i < 4; i++) {
-        const v1 = ws[XLSX.utils.encode_cell({ r: 17 + i, c: colIdx })];
-        const v2 = ws[XLSX.utils.encode_cell({ r: 22 + i, c: colIdx })];
-        const v3 = ws[XLSX.utils.encode_cell({ r: 27 + i, c: colIdx })];
-        entryObj.cc.CC1[i] = (v1 && typeof v1.v === 'number') ? v1.v : 0;
-        entryObj.cc.CC2[i] = (v2 && typeof v2.v === 'number') ? v2.v : 0;
-        entryObj.cc.CC3[i] = (v3 && typeof v3.v === 'number') ? v3.v : 0;
+        entryObj.cc.CC1[i] = parseVal(ws[XLSX.utils.encode_cell({ r: 17 + i, c: colIdx })]);
+        entryObj.cc.CC2[i] = parseVal(ws[XLSX.utils.encode_cell({ r: 22 + i, c: colIdx })]);
+        entryObj.cc.CC3[i] = parseVal(ws[XLSX.utils.encode_cell({ r: 27 + i, c: colIdx })]);
       }
       for (let s = 0; s < 9; s++) {
         const startRow = 34 + (s * 7);
         const sqdKey = "SQD" + s;
         for (let i = 0; i < 6; i++) {
-          const v = ws[XLSX.utils.encode_cell({ r: startRow + i, c: colIdx })];
-          entryObj.sqd[sqdKey][i] = (v && typeof v.v === 'number') ? v.v : 0;
+          entryObj.sqd[sqdKey][i] = parseVal(ws[XLSX.utils.encode_cell({ r: startRow + i, c: colIdx })]);
         }
       }
       
