@@ -39,8 +39,8 @@ try:
                 tree = ET.parse(f)
                 root = tree.getroot()
                 rows = root.findall('.//main:row', ns)
-                print("\nPeaking into Sheet 1 (first 10 rows):")
-                for i, row in enumerate(rows[:10]):
+                print("\nPeaking into Sheet 1 (first 20 rows):")
+                for i, row in enumerate(rows[:20]):
                     cells = row.findall('main:c', ns)
                     row_data = []
                     for c in cells:
