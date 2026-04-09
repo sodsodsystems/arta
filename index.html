@@ -109,7 +109,9 @@
 <header>
   <div class="logo">ARTA <span>//</span> Satisfaction Survey Tally</div>
   <div class="header-actions">
-    <button class="btn" onclick="resetCurrent()">Reset</button>
+    <button class="btn" onclick="backupDB()" title="Save all data to a JSON file">Backup</button>
+    <button class="btn" onclick="restoreDB()" title="Restore data from a JSON backup">Restore</button>
+    <button class="btn" onclick="importTemplate()" title="Import data from Excel template">Import Template</button>
     <button class="btn btn-accent" onclick="exportExcel()">Export Excel</button>
   </div>
 </header>
@@ -130,7 +132,7 @@
     <div class="ctrl-group">
       <label>Month</label>
       <select id="month" onchange="render()">
-        <option value="Overall">Overall</option>
+        <option value="Overall">Overall / Yearly Summary</option>
         <option>January</option><option>February</option><option>March</option>
         <option>April</option><option>May</option><option>June</option>
         <option>July</option><option>August</option><option>September</option>
@@ -458,6 +460,117 @@ async function exportExcel() {
     console.error(err);
     toast('Template Error: ' + err.message);
   }
+}
+
+// ── Maintenance & Import ────────────────────────────────────────────────────
+function backupDB() {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ARTA_Tally_Backup_' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+  toast('Backup downloaded!');
+}
+
+function restoreDB() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = e => {
+    const file = e.target.files[0];
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const imported = JSON.parse(reader.result);
+        if (confirm('Overwrite current local database with this backup?')) {
+          data = imported;
+          save();
+          render();
+          toast('Data restored!');
+        }
+      } catch(err) { toast('Error: Invalid JSON backup file'); }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+function importTemplate() {
+  if (isOverall()) return;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.xlsx';
+  input.onchange = async e => {
+    const file = e.target.files[0];
+    toast('Parsing template...');
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const wb = XLSX.read(arrayBuffer, { type: 'buffer' });
+      const svc = document.getElementById('svcName').value;
+      const type = document.getElementById('svcType').value;
+      const mo = document.getElementById('month').value;
+      const ws = wb.Sheets[type];
+      if (!ws) throw new Error('Summary sheet "' + type + '" not found in file');
+      
+      const range = XLSX.utils.decode_range(ws['!ref']);
+      let colIdx = -1;
+      const toolName = svc.replace(/[^a-z0-9]/gi, '').toLowerCase();
+      
+      for (let c = 1; c <= range.e.c; c++) {
+        const cell = ws[XLSX.utils.encode_cell({ r: 0, c: c })];
+        if (cell && cell.v) {
+          const excelName = cell.v.toString().replace(/[^a-z0-9]/gi, '').toLowerCase();
+          if (excelName === toolName || excelName.includes(toolName) || toolName.includes(excelName)) {
+            colIdx = c;
+            break;
+          }
+        }
+      }
+      
+      if (colIdx === -1) throw new Error('Service "' + svc + '" not found in Excel sheet');
+      
+      const entryObj = entry();
+      
+      // Extract Data (Mapping same rows as export)
+      for (let i = 0; i < 6; i++) {
+        const v = ws[XLSX.utils.encode_cell({ r: 2 + i, c: colIdx })];
+        entryObj.demo.age[i] = (v && typeof v.v === 'number') ? v.v : 0;
+      }
+      for (let i = 0; i < 3; i++) {
+        const v = ws[XLSX.utils.encode_cell({ r: 9 + i, c: colIdx })];
+        entryObj.demo.clientType[i] = (v && typeof v.v === 'number') ? v.v : 0;
+      }
+      for (let i = 0; i < 2; i++) {
+        const v = ws[XLSX.utils.encode_cell({ r: 13 + i, c: colIdx })];
+        entryObj.demo.sex[i] = (v && typeof v.v === 'number') ? v.v : 0;
+      }
+      for (let i = 0; i < 4; i++) {
+        const v1 = ws[XLSX.utils.encode_cell({ r: 17 + i, c: colIdx })];
+        const v2 = ws[XLSX.utils.encode_cell({ r: 22 + i, c: colIdx })];
+        const v3 = ws[XLSX.utils.encode_cell({ r: 27 + i, c: colIdx })];
+        entryObj.cc.CC1[i] = (v1 && typeof v1.v === 'number') ? v1.v : 0;
+        entryObj.cc.CC2[i] = (v2 && typeof v2.v === 'number') ? v2.v : 0;
+        entryObj.cc.CC3[i] = (v3 && typeof v3.v === 'number') ? v3.v : 0;
+      }
+      for (let s = 0; s < 9; s++) {
+        const startRow = 34 + (s * 7);
+        const sqdKey = "SQD" + s;
+        for (let i = 0; i < 6; i++) {
+          const v = ws[XLSX.utils.encode_cell({ r: startRow + i, c: colIdx })];
+          entryObj.sqd[sqdKey][i] = (v && typeof v.v === 'number') ? v.v : 0;
+        }
+      }
+      
+      save();
+      render();
+      toast('Imported ' + svc + ' data into ' + mo);
+    } catch(err) {
+      console.error(err);
+      toast('Import Error: ' + err.message);
+    }
+  };
+  input.click();
 }
 
 // ── Toast ──────────────────────────────────────────────────────────────────
