@@ -234,6 +234,10 @@ function migrateData() {
       delete data[k];
     }
   });
+  if (migrated) save();
+}
+migrateData();
+
 function save() {
   try { 
     localStorage.setItem('lcwd_tally', JSON.stringify(data)); 
@@ -271,7 +275,6 @@ function checkRecovery() {
   const chkStr = localStorage.getItem('lcwd_tally_checkpoint');
   if (!chkStr) return;
   
-  // If main data is entirely empty, offer recovery
   if (Object.keys(data).length === 0) {
     const checkpoint = JSON.parse(chkStr);
     if (confirm('It looks like your local data is empty, but we found a backup from ' + new Date(checkpoint.timestamp).toLocaleString() + '. Would you like to restore it?')) {
@@ -286,17 +289,25 @@ function checkRecovery() {
 // Auto-checkpoint every 5 minutes
 setInterval(() => createCheckpoint('auto'), 5 * 60 * 1000);
 
+// Sync Tabs
+window.addEventListener('storage', function(e) {
+  if (e.key === 'lcwd_tally') {
+    try { 
+      data = JSON.parse(e.newValue || '{}'); 
+      render(); 
+    } catch(err) {}
+  }
+});
+
 // Exit protection
 window.addEventListener('beforeunload', function(e) {
-  // Only warn if they are in the middle of a session (simplified check)
-  // Browser standard prevents custom messages in many cases, but this triggers the confirmation.
   if (Object.keys(data).length > 0) {
     e.preventDefault();
     e.returnValue = '';
   }
 });
 
-function migrateData() {
+function aggregate() {
   const y = document.getElementById('year').value;
   const t = document.getElementById('svcType').value;
   const n = document.getElementById('svcName').value;
@@ -344,10 +355,6 @@ function entry() {
     data[k].demo = { age:[0,0,0,0,0,0], clientType:[0,0,0], sex:[0,0] };
   }
   return data[k];
-}
-
-function save() {
-  try { localStorage.setItem('lcwd_tally', JSON.stringify(data)); } catch(e) {}
 }
 
 // ── Populate service dropdown ──────────────────────────────────────────────
