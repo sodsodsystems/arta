@@ -210,7 +210,40 @@ function key() {
          document.getElementById('month').value;
 }
 
+function aggregate() {
+  const t = document.getElementById('svcType').value;
+  const n = document.getElementById('svcName').value;
+  const agg = {
+    cc:   { CC1:[0,0,0,0], CC2:[0,0,0,0], CC3:[0,0,0,0] },
+    sqd:  {},
+    demo: { age:[0,0,0,0,0,0], clientType:[0,0,0], sex:[0,0] }
+  };
+  SQD_LABELS.forEach(function(s) { agg.sqd[s] = [0,0,0,0,0,0]; });
+
+  const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  months.forEach(function(m) {
+    const k = t + '||' + n + '||' + m;
+    const e = data[k];
+    if (e) {
+      CC_LABELS.forEach(function(cc) {
+        for(let i=0; i<4; i++) agg.cc[cc][i] += (e.cc[cc][i] || 0);
+      });
+      SQD_LABELS.forEach(function(sqd) {
+        if (!e.sqd[sqd]) return;
+        for(let i=0; i<6; i++) agg.sqd[sqd][i] += (e.sqd[sqd][i] || 0);
+      });
+      if (e.demo) {
+        Object.keys(DEMOGRAPHICS).forEach(function(gk) {
+          for(let i=0; i<e.demo[gk].length; i++) agg.demo[gk][i] += (e.demo[gk][i] || 0);
+        });
+      }
+    }
+  });
+  return agg;
+}
+
 function entry() {
+  if (document.getElementById('month').value === 'Overall') return aggregate();
   const k = key();
   if (!data[k]) {
     data[k] = {
@@ -220,7 +253,6 @@ function entry() {
     };
     SQD_LABELS.forEach(function(s) { data[k].sqd[s] = [0,0,0,0,0,0]; });
   }
-  // Migrate old entries that may be missing the demo field
   if (!data[k].demo) {
     data[k].demo = { age:[0,0,0,0,0,0], clientType:[0,0,0], sex:[0,0] };
   }
@@ -322,17 +354,26 @@ function renderDemo(e) {
 }
 
 // ── Tally actions ──────────────────────────────────────────────────────────
-function addDemo(gk, i)  { entry().demo[gk][i]++; save(); render(); }
-function undoDemo(gk, i) { var a = entry().demo[gk]; if (a[i] > 0) { a[i]--; save(); render(); } }
+function isOverall() {
+  if (document.getElementById('month').value === 'Overall') {
+    toast("Editing is disabled in Overall view.");
+    return true;
+  }
+  return false;
+}
 
-function addCC(cc, i)  { entry().cc[cc][i]++; save(); render(); }
-function undoCC(cc)    { var a = entry().cc[cc]; for (var i = a.length-1; i >= 0; i--) { if (a[i] > 0) { a[i]--; save(); render(); return; } } }
+function addDemo(gk, i)  { if (isOverall()) return; entry().demo[gk][i]++; save(); render(); }
+function undoDemo(gk, i) { if (isOverall()) return; var a = entry().demo[gk]; if (a[i] > 0) { a[i]--; save(); render(); } }
 
-function addSQD(sqd, i)  { entry().sqd[sqd][i]++; save(); render(); }
-function undoSQD(sqd)    { var a = entry().sqd[sqd]; for (var i = a.length-1; i >= 0; i--) { if (a[i] > 0) { a[i]--; save(); render(); return; } } }
+function addCC(cc, i)  { if (isOverall()) return; entry().cc[cc][i]++; save(); render(); }
+function undoCC(cc)    { if (isOverall()) return; var a = entry().cc[cc]; for (var i = a.length-1; i >= 0; i--) { if (a[i] > 0) { a[i]--; save(); render(); return; } } }
+
+function addSQD(sqd, i)  { if (isOverall()) return; entry().sqd[sqd][i]++; save(); render(); }
+function undoSQD(sqd)    { if (isOverall()) return; var a = entry().sqd[sqd]; for (var i = a.length-1; i >= 0; i--) { if (a[i] > 0) { a[i]--; save(); render(); return; } } }
 
 // ── Reset ──────────────────────────────────────────────────────────────────
 function resetCurrent() {
+  if (isOverall()) return;
   if (!confirm('Reset all tallies for this service and month?')) return;
   delete data[key()];
   save();
@@ -341,70 +382,82 @@ function resetCurrent() {
 }
 
 // ── Excel Export ───────────────────────────────────────────────────────────
-function exportExcel() {
-  var e    = entry();
-  var svc  = document.getElementById('svcName').value;
-  var mo   = document.getElementById('month').value;
-  var type = document.getElementById('svcType').value;
-  var wb   = XLSX.utils.book_new();
+async function exportExcel() {
+  const svc  = document.getElementById('svcName').value;
+  const type = document.getElementById('svcType').value;
+  const mo   = document.getElementById('month').value;
+  const e    = entry();
 
-  // ── Sheet 1: Summary info ──────────────────────────────────────────────
-  var infoRows = [
-    ["ARTA SATISFACTION SURVEY TALLY"],
-    [],
-    ["Service Type", type],
-    ["Service Name", svc],
-    ["Period",       mo]
-  ];
-  var wsInfo = XLSX.utils.aoa_to_sheet(infoRows);
-  wsInfo['!cols'] = [{wch:20},{wch:50}];
-  XLSX.utils.book_append_sheet(wb, wsInfo, "Info");
+  toast('Preparing SRS template...');
 
-  // ── Sheet 2: Respondent Profile ────────────────────────────────────────
-  var demoRows = [["Category","Option","Count"]];
-  Object.keys(DEMOGRAPHICS).forEach(function(gk) {
-    var g = DEMOGRAPHICS[gk];
-    g.items.forEach(function(item, i) {
-      demoRows.push([g.label, item, e.demo[gk][i]]);
+  try {
+    const response = await fetch('SRS HR COPY.xlsx');
+    if (!response.ok) throw new Error('Template file not found');
+    const arrayBuffer = await response.arrayBuffer();
+    const wb = XLSX.read(arrayBuffer, { type: 'buffer' });
+
+    // 1. Populate Summary Sheet (Internal / External)
+    const summarySheetName = type;
+    const wsSummary = wb.Sheets[summarySheetName];
+    if (wsSummary) {
+      const range = XLSX.utils.decode_range(wsSummary['!ref']);
+      let colIdx = -1;
+      // Search Row 1 for service name
+      for (let c = 1; c <= range.e.c; c++) {
+        const cell = wsSummary[XLSX.utils.encode_cell({ r: 0, c: c })];
+        if (cell && cell.v) {
+          const excelName = cell.v.toString().replace(/[^a-z0-9]/gi, '').toLowerCase();
+          const toolName  = svc.replace(/[^a-z0-9]/gi, '').toLowerCase();
+          if (excelName === toolName || excelName.includes(toolName) || toolName.includes(excelName)) {
+            colIdx = c;
+            break;
+          }
+        }
+      }
+
+      if (colIdx !== -1) {
+        // Demographics
+        for (let i = 0; i < 6; i++) wsSummary[XLSX.utils.encode_cell({ r: 2 + i, c: colIdx })] = { v: e.demo.age[i], t: 'n' };
+        for (let i = 0; i < 3; i++) wsSummary[XLSX.utils.encode_cell({ r: 9 + i, c: colIdx })] = { v: e.demo.clientType[i], t: 'n' };
+        for (let i = 0; i < 2; i++) wsSummary[XLSX.utils.encode_cell({ r: 13 + i, c: colIdx })] = { v: e.demo.sex[i], t: 'n' };
+        // CC
+        for (let i = 0; i < 4; i++) wsSummary[XLSX.utils.encode_cell({ r: 17 + i, c: colIdx })] = { v: e.cc.CC1[i], t: 'n' };
+        for (let i = 0; i < 4; i++) wsSummary[XLSX.utils.encode_cell({ r: 22 + i, c: colIdx })] = { v: e.cc.CC2[i], t: 'n' };
+        for (let i = 0; i < 4; i++) wsSummary[XLSX.utils.encode_cell({ r: 27 + i, c: colIdx })] = { v: e.cc.CC3[i], t: 'n' };
+        // SQD
+        for (let s = 0; s < 9; s++) {
+          const startRow = 34 + (s * 7);
+          const sqdKey = "SQD" + s;
+          for (let i = 0; i < 6; i++) wsSummary[XLSX.utils.encode_cell({ r: startRow + i, c: colIdx })] = { v: e.sqd[sqdKey][i], t: 'n' };
+        }
+      }
+    }
+
+    // 2. Populate Service-Specific Sheet
+    let svcSheetName = null;
+    const cleanToolName = svc.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    wb.SheetNames.forEach(name => {
+      const cleanName = name.replace(/[^a-z0-9]/gi, '').toLowerCase();
+      if (cleanName === cleanToolName || cleanName.includes(cleanToolName) || cleanToolName.includes(cleanName)) svcSheetName = name;
     });
-    demoRows.push([]); // blank row between groups
-  });
-  var wsDemo = XLSX.utils.aoa_to_sheet(demoRows);
-  wsDemo['!cols'] = [{wch:16},{wch:20},{wch:10}];
-  XLSX.utils.book_append_sheet(wb, wsDemo, "Respondent Profile");
 
-  // ── Sheet 3: CC Awareness ──────────────────────────────────────────────
-  var ccRows = [["CC Item","Option 1","Option 2","Option 3","Option 4","Total"]];
-  CC_LABELS.forEach(function(cc) {
-    var total = e.cc[cc].reduce(function(a,b){return a+b;},0);
-    ccRows.push([cc, e.cc[cc][0], e.cc[cc][1], e.cc[cc][2], e.cc[cc][3], total]);
-  });
-  ccRows.push([]);
-  ccRows.push(["Option descriptions:"]);
-  CC_FULL.forEach(function(desc, i) {
-    ccRows.push(["Option " + (i+1), desc]);
-  });
-  var wsCc = XLSX.utils.aoa_to_sheet(ccRows);
-  wsCc['!cols'] = [{wch:10},{wch:10},{wch:10},{wch:10},{wch:10},{wch:10},{wch:60}];
-  XLSX.utils.book_append_sheet(wb, wsCc, "CC Awareness");
+    if (svcSheetName && wb.Sheets[svcSheetName]) {
+      const wsSvc = wb.Sheets[svcSheetName];
+      CC_LABELS.forEach((cc, rOff) => {
+        for (let i = 0; i < 4; i++) wsSvc[XLSX.utils.encode_cell({ r: 3 + rOff, c: 2 + i })] = { v: e.cc[cc][i], t: 'n' };
+      });
+      SQD_LABELS.forEach((sqd, rOff) => {
+        for (let i = 0; i < 6; i++) wsSvc[XLSX.utils.encode_cell({ r: 3 + rOff, c: 9 + i })] = { v: e.sqd[sqd][i], t: 'n' };
+      });
+    }
 
-  // ── Sheet 4: SQD ──────────────────────────────────────────────────────
-  var sqdRows = [["SQD","Question","Str. Disagree","Disagree","Neither","Agree","Str. Agree","Not Appl.","Total","SA %"]];
-  SQD_LABELS.forEach(function(sqd, idx) {
-    var row   = e.sqd[sqd];
-    var total = row.reduce(function(a,b){return a+b;},0);
-    var valid = row[0]+row[1]+row[2]+row[3]+row[4];
-    var saPct = valid > 0 ? Math.round(row[4]/valid*100) + '%' : '—';
-    sqdRows.push([sqd, SQD_TEXTS[idx], row[0], row[1], row[2], row[3], row[4], row[5], total, saPct]);
-  });
-  var wsSqd = XLSX.utils.aoa_to_sheet(sqdRows);
-  wsSqd['!cols'] = [{wch:8},{wch:55},{wch:14},{wch:12},{wch:10},{wch:10},{wch:12},{wch:12},{wch:8},{wch:8}];
-  XLSX.utils.book_append_sheet(wb, wsSqd, "SQD");
-
-  // ── Download ──────────────────────────────────────────────────────────
-  var filename = 'ARTA_Tally_' + type + '_' + svc.replace(/[\/\\:*?"<>|]/g,'_').substring(0,30) + '_' + mo + '.xlsx';
-  XLSX.writeFile(wb, filename);
-  toast('Excel file downloaded!');
+    const filename = 'ARTA_Tally_' + type + '_' + svc.replace(/[^a-z0-9]/gi,'_').substring(0,30) + '_' + mo + '.xlsx';
+    XLSX.writeFile(wb, filename);
+    toast('Excel template filled and downloaded!');
+  } catch (err) {
+    console.error(err);
+    toast('Template Error: ' + err.message);
+  }
 }
 
 // ── Toast ──────────────────────────────────────────────────────────────────
