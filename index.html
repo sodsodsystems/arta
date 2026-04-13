@@ -95,6 +95,13 @@
   .toast { position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%); background: var(--text); color: #fff; font-size: 13px; padding: 8px 18px; border-radius: 20px; opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 999; }
   .toast.show { opacity: 1; }
 
+  @keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); background: var(--accent); color: #fff; }
+    100% { transform: scale(1); }
+  }
+  .pulse { animation: pulse 0.3s ease-out; }
+
   @media (max-width: 600px) {
     main { padding: 1rem; }
     .summary-row { grid-template-columns: 1fr 1fr; }
@@ -367,12 +374,64 @@ function populateSvc() {
 }
 
 // ── Master render ──────────────────────────────────────────────────────────
+let lastStructureKey = "";
+
 function render() {
-  var e = entry();
+  const currentKey = key();
+  const structureKey = document.getElementById('svcName').value + '||' + document.getElementById('svcType').value;
+  const e = entry();
+
+  // Rebuild structure only if service changes
+  if (structureKey !== lastStructureKey) {
+    renderDemoStructure();
+    renderCCStructure();
+    renderSQDStructure();
+    lastStructureKey = structureKey;
+  }
+
+  // Always sync values (fast)
+  syncAll(e);
+}
+
+function syncAll(e) {
   renderSummary(e);
-  renderDemo(e);
-  renderCC(e);
-  renderSQD(e);
+  
+  // Sync Demo
+  Object.keys(DEMOGRAPHICS).forEach(gk => {
+    DEMOGRAPHICS[gk].items.forEach((_, i) => {
+      syncVal(`val-demo-${gk}-${i}`, e.demo[gk][i]);
+    });
+  });
+
+  // Sync CC
+  CC_LABELS.forEach(cc => {
+    CC_OPTS.forEach((_, i) => {
+      syncVal(`val-cc-${cc}-${i}`, e.cc[cc][i]);
+    });
+  });
+
+  // Sync SQD
+  SQD_LABELS.forEach(sqd => {
+    RESP_SHORT.forEach((_, i) => {
+      syncVal(`val-sqd-${sqd}-${i}`, e.sqd[sqd][i]);
+    });
+  });
+}
+
+function syncVal(id, val) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const oldVal = parseInt(el.textContent) || 0;
+  if (oldVal !== val) {
+    el.textContent = val;
+    el.classList.toggle('has-val', val > 0);
+    // Add pulse if increasing
+    if (val > oldVal) {
+      el.classList.remove('pulse');
+      void el.offsetWidth; // Trigger reflow
+      el.classList.add('pulse');
+    }
+  }
 }
 
 // ── Summary stats ──────────────────────────────────────────────────────────
@@ -390,12 +449,11 @@ function renderSummary(e) {
 }
 
 // ── Citizen's Charter ──────────────────────────────────────────────────────
-function renderCC(e) {
+function renderCCStructure() {
   document.getElementById('ccSection').innerHTML = CC_LABELS.map(function(cc) {
     var opts = CC_OPTS.map(function(opt, i) {
-      var hv = e.cc[cc][i] > 0 ? ' has-val' : '';
       return '<div class="cc-opt">' +
-        '<div class="tally-box' + hv + '" onclick="addCC(\'' + cc + '\',' + i + ')" title="' + CC_FULL[i] + '">' + e.cc[cc][i] + '</div>' +
+        '<div id="val-cc-' + cc + '-' + i + '" class="tally-box" onclick="addCC(\'' + cc + '\',' + i + ')" title="' + CC_FULL[i] + '">0</div>' +
         '<span class="opt-label">' + opt + '</span>' +
         '</div>';
     }).join('');
@@ -408,12 +466,11 @@ function renderCC(e) {
 }
 
 // ── SQD ───────────────────────────────────────────────────────────────────
-function renderSQD(e) {
+function renderSQDStructure() {
   document.getElementById('sqdSection').innerHTML = SQD_LABELS.map(function(sqd, idx) {
     var cells = RESP_SHORT.map(function(r, i) {
-      var hv = e.sqd[sqd][i] > 0 ? ' has-val' : '';
       return '<div class="resp-cell">' +
-        '<div class="resp-box' + hv + '" onclick="addSQD(\'' + sqd + '\',' + i + ')" title="' + RESP_FULL[i] + '">' + e.sqd[sqd][i] + '</div>' +
+        '<div id="val-sqd-' + sqd + '-' + i + '" class="resp-box" onclick="addSQD(\'' + sqd + '\',' + i + ')" title="' + RESP_FULL[i] + '">0</div>' +
         '<span class="resp-label">' + r + '</span>' +
         '</div>';
     }).join('');
@@ -430,15 +487,14 @@ function renderSQD(e) {
 }
 
 // ── Demographics ───────────────────────────────────────────────────────────
-function renderDemo(e) {
+function renderDemoStructure() {
   document.getElementById('demoSection').innerHTML = Object.keys(DEMOGRAPHICS).map(function(gk) {
     var g = DEMOGRAPHICS[gk];
     var rows = g.items.map(function(item, i) {
-      var hv = e.demo[gk][i] > 0 ? ' has-val' : '';
       return '<div class="demo-row">' +
         '<span class="demo-label">' + item + '</span>' +
         '<div class="demo-controls">' +
-          '<div class="demo-box' + hv + '" onclick="addDemo(\'' + gk + '\',' + i + ')">' + e.demo[gk][i] + '</div>' +
+          '<div id="val-demo-' + gk + '-' + i + '" class="demo-box" onclick="addDemo(\'' + gk + '\',' + i + ')">0</div>' +
           '<button class="undo-btn" onclick="undoDemo(\'' + gk + '\',' + i + ')" title="Undo">&#8617;</button>' +
         '</div>' +
         '</div>';
